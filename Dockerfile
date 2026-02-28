@@ -2,8 +2,8 @@ FROM ubuntu:20.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PCL_VERSION="1.9.1"
-ENV CERES_VERSION="1.14.0"
+ENV PCL_VERSION=1.9.1
+ENV CERES_VERSION=1.14.0
 
 # Combine RUN commands and clean up in the same layer
 RUN apt-get update && apt-get install -y \
@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     git-core \
     build-essential \
+    gfortran \
     apt-utils \
     wget \
     unzip \
@@ -65,7 +66,7 @@ RUN useradd -ms /bin/bash user && \
     usermod -aG sudo user && \
     echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 ENV DISPLAY :0
- 
+
 USER user
 
 WORKDIR /tmp
@@ -76,9 +77,9 @@ RUN wget https://www.vtk.org/files/release/8.2/VTK-8.2.0.tar.gz \
     && mkdir -p VTK-8.2.0/build \
     && cd VTK-8.2.0/build \
     && cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DVTK_MODULE_ENABLE_VTK_RenderingContextOpenGL2=YES \
-    && make -j2 \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DVTK_MODULE_ENABLE_VTK_RenderingContextOpenGL2=YES \
+    && make -j$(nproc) \
     && sudo make install \
     && cd /tmp \
     && sudo rm -rf VTK-8.2.0*
@@ -96,24 +97,24 @@ RUN mkdir -p /tmp/deps && cd /tmp/deps \
 RUN cd /tmp/deps/gflags-2.2.1 \
     && mkdir build && cd build \
     && cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    && sudo make -j2 && sudo make install \
+    && sudo make -j$(nproc) && sudo make install \
     && sudo ldconfig
 
 # Build and install glog
 RUN cd /tmp/deps/glog-0.3.5 \
     && ./configure \
-    && sudo make -j2 && sudo make install \
+    && sudo make -j$(nproc) && sudo make install \
     && sudo ldconfig
 
 # Build and install LAPACK
 RUN cd /tmp/deps/lapack-3.10.1 \
-    && mkdir build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release \
-    && sudo make -j2 && sudo make install
+    && mkdir -p build && cd build \
+    && sudo cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && sudo make -j$(nproc) && sudo make install
 
 # Build and install OpenBLAS
 RUN cd /tmp/deps/OpenBLAS-0.3.17 \
-    && sudo make TARGET=GENERIC -j2 \
+    && sudo make TARGET=GENERIC -j$(nproc) \
     && sudo make install
 
 # Install PCL
@@ -122,9 +123,9 @@ RUN wget https://github.com/PointCloudLibrary/pcl/archive/refs/tags/pcl-${PCL_VE
     && mkdir -p pcl-pcl-${PCL_VERSION}/build \
     && cd pcl-pcl-${PCL_VERSION}/build \
     && cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DVTK_RENDERING_BACKEND=OpenGL2 \
-    && sudo make -j2 \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DVTK_RENDERING_BACKEND=OpenGL2 \
+    && sudo make -j$(nproc) \
     && sudo make install \
     && cd /tmp \
     && sudo rm -rf pcl-pcl-*
@@ -137,8 +138,8 @@ RUN mkdir -p ceres-solver-${CERES_VERSION} \
     && mkdir -p ceres-solver-${CERES_VERSION}/ceres-bin \
     && cd ceres-solver-${CERES_VERSION}/ceres-bin \
     && cmake .. \
-        -DCXSPARSE=ON \
-        -DEIGEN_PREFER_EXPORTED_EIGEN_CMAKE_CONFIGURATION=OFF \
+    -DCXSPARSE=ON \
+    -DEIGEN_PREFER_EXPORTED_EIGEN_CMAKE_CONFIGURATION=OFF \
     && sudo make -j2 \
     && sudo make install \
     && cd /tmp \
@@ -149,4 +150,4 @@ RUN sudo rm -rf /tmp/deps
 
 WORKDIR /SfS
 
-CMD /bin/bash
+CMD ["/bin/bash"]
