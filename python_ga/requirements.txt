@@ -1,0 +1,6 @@
+open3d==0.18.0
+deap==1.4.1
+numpy
+scipy
+trimesh
+tqdm
