@@ -25,7 +25,7 @@
 #include "class/reconstruction.h"
 #include "class/feature_matching.h"			
 #include "class/ranking_system.h"
-
+// test
 #define TOP_k 5
 #define BRANCH_b 3
 
