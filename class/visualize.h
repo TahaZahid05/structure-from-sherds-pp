@@ -17,7 +17,7 @@
 #include "../class/data_structure.h"
 #include "../class/feature_matching.h"
 
-class StateManager;
+class GeneticAlgorithm;
 
 using namespace std;
 using namespace Eigen;
@@ -156,7 +156,7 @@ CloudCorres CorresToCloud(const Corres& cor);	// Change cor.p_A to ptr_xyz
 
 void VisCurrentState(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index,
 	vector<Visualize>& pc_overlap,
 	const vector<Trans>& T_axis);
@@ -174,23 +174,23 @@ void TurnoffandReturn(pcl::visualization::PCLVisualizer::Ptr& viewer,
 
 void TurnoffandReturn(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index);
 
 void ObjVisualize(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	vector<bool>& right_sherd,
 	int index);
 
 void SaveResult(const vector<Visualize>& pc,
-	const StateManager& manager,
+	const GeneticAlgorithm& manager,
 	int index,
 	const string path);
 
 void ReverseFine(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index,
 	vector<Trans>& T_fine);
 #endif

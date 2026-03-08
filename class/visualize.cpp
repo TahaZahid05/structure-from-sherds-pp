@@ -1,5 +1,6 @@
 #include "visualize.h"
 #include "../class/ranking_system.h"
+#include "../class/genetic_algorithm.h"
 //############################## class visualize ##############################//
 void Visualize::MakePointCloud(const MatrixXd& data, const MatrixXd& norm, string name)
 {
@@ -340,7 +341,7 @@ CloudCorres CorresToCloud(const Corres& cor)
 void VisCurrentState(
 	pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index,
 	vector<Visualize>& pc_overlap,
 	const vector<Trans>& T_axis)
@@ -459,7 +460,7 @@ void TurnoffandReturn(pcl::visualization::PCLVisualizer::Ptr& viewer,
 }
 void TurnoffandReturn(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index)
 {
 	int num_graph = manager.out_state_[index].graph_.size();
@@ -486,7 +487,7 @@ void TurnoffandReturn(pcl::visualization::PCLVisualizer::Ptr& viewer,
 
 void ObjVisualize(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	vector<bool>& right_sherd,
 	int index)
 {
@@ -502,7 +503,7 @@ void ObjVisualize(pcl::visualization::PCLVisualizer::Ptr& viewer,
 }
 
 void SaveResult(const vector<Visualize>& pc,
-	const StateManager& manager,
+	const GeneticAlgorithm& manager,
 	int index,
 	const string path)
 {
@@ -533,7 +534,7 @@ void SaveResult(const vector<Visualize>& pc,
 
 void ReverseFine(pcl::visualization::PCLVisualizer::Ptr& viewer,
 	vector<Visualize>& pc,
-	StateManager& manager,
+	GeneticAlgorithm& manager,
 	int index,
 	vector<Trans>& T_fine)
 {
