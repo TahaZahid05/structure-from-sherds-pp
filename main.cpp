@@ -25,7 +25,7 @@
 #include "class/reconstruction.h"
 #include "class/feature_matching.h"			
 #include "class/ranking_system.h"
-// #include "class/genetic_algorithm.h"
+#include "class/genetic_algorithm.h"
 // test
 #define TOP_k 5
 #define BRANCH_b 3
@@ -215,6 +215,45 @@ int main(int argc, char** argv)
 	cout << "#################### Pairwise pruning ####################" << endl;
 	PairwisePruning(shard, LCS_out);
 
+	cout << "#################### Genetic Algorithm search ####################" << endl;
+	GeneticAssembler ga(shard, LCS_out, SHARD_NUMBER);
+	ga.Run();
+	vector<Trans> T_ga = ga.GetTransforms();
+	MatrixXd graph_ga = ga.GetGraph();
+	vector<Trans> T_ga_eval = T_axis;
+	for (int i = 0; i < SHARD_NUMBER; i++) {
+		if (!shard_on_off[i])
+			continue;
+		Matrix3d R_ga = Matrix3d::Identity();
+		Vector3d t_ga = { 0, 0, 0 };
+		T_ga[i].Output(R_ga, t_ga);
+		T_ga_eval[i].Input(R_ga, t_ga);
+	}
+
+	pair<int, int> sherd_acc, edge_acc;
+	vector<bool> right_sherd_ga(SHARD_NUMBER, true);
+	for (int i = 0; i < SHARD_NUMBER; i++) {
+		if (!shard_on_off[i])
+			right_sherd_ga[i] = false;
+	}
+	auto [k_sherd, t_sherd, k_edge, t_edge] = CountResult(
+		GT_graph, GT_trans, graph_ga, T_ga_eval, right_sherd_ga);
+	sherd_acc = { k_sherd, t_sherd };
+	edge_acc = { k_edge, t_edge };
+	// Note: time_ga includes preprocessing (axis alignment, LCS,
+	// pruning) + GA. For pure GA time, move s_time start to just
+	// before ga.Run().
+	double time_ga = (clock() - s_time) / 1000.0;
+	cout << "########## GA Results ##########" << endl;
+	cout << "GA Sherd Accuracy : " << k_sherd << " / " << t_sherd << endl;
+	cout << "GA Edge Accuracy  : " << k_edge << " / " << t_edge << endl;
+	cout << "GA Time           : " << time_ga << " sec" << endl;
+	cout << "################################" << endl;
+	string path_result_ga = path + "Result/GA_";
+	string ga_mkdir_cmd = "mkdir -p \"" + path_result_ga + "\"";
+	std::system(ga_mkdir_cmd.c_str());
+	SaveAcc(path_result_ga, sherd_acc, edge_acc, time_ga);
+
 	list<LCSIndex>::iterator iter = LCS_out.begin();
 	cout << "Total number pruned : " << LCS_out.size() << endl;
 	int count_move_state(0);
@@ -223,6 +262,128 @@ int main(int argc, char** argv)
 	//////#################### Incremental graph building ####################//
 	StateManager manager(TOP_k, BRANCH_b, shard, LCS_out, step_size, path + "Result");
 	manager.BuildStep();
+
+	if (!manager.out_state_.empty()) {
+		const State& top_state = manager.out_state_[0];
+
+		//#################### BAISER (before fine) ####################//
+		MatrixXd graph_baiser_pre = MatrixXd::Zero(SHARD_NUMBER, SHARD_NUMBER);
+		for (size_t g = 0; g < top_state.graph_.size(); ++g) {
+			for (int i = 0; i < SHARD_NUMBER; ++i) {
+				for (int j = 0; j < SHARD_NUMBER; ++j) {
+					if (top_state.graph_[g].simple_graph_(i, j)) {
+						graph_baiser_pre(i, j) = 1;
+					}
+				}
+			}
+		}
+
+		vector<Trans> T_baiser_pre = T_axis;
+		for (int i = 0; i < SHARD_NUMBER; ++i) {
+			if (!shard_on_off[i])
+				continue;
+			for (size_t g = 0; g < top_state.graph_.size(); ++g) {
+				if (top_state.graph_[g].node_[i]) {
+					Matrix4d T_obj = Matrix4d::Identity();
+					top_state.graph_[g].T_[i].Output(T_obj);
+					T_baiser_pre[i].Input(T_obj);
+					break;
+				}
+			}
+		}
+
+		vector<bool> right_sherd_baiser_pre(SHARD_NUMBER, true);
+		for (int i = 0; i < SHARD_NUMBER; i++) {
+			if (!shard_on_off[i])
+				right_sherd_baiser_pre[i] = false;
+		}
+
+		auto [k_sherd_baiser_pre, t_sherd_baiser_pre, k_edge_baiser_pre, t_edge_baiser_pre] = CountResult(
+			GT_graph, GT_trans, graph_baiser_pre, T_baiser_pre, right_sherd_baiser_pre);
+
+		//#################### GA (after fine) ####################//
+		vector<Geom> shard_ga_fine = shard;
+		vector<Matrix3d> R_ga_fine(SHARD_NUMBER, Matrix3d::Identity());
+		vector<Vector3d> t_ga_fine(SHARD_NUMBER, Vector3d::Zero());
+		vector<bool> true_node_ga(SHARD_NUMBER, false);
+		for (int i = 0; i < SHARD_NUMBER; ++i) {
+			if (!shard_on_off[i])
+				continue;
+			true_node_ga[i] = true;
+			Matrix3d R = Matrix3d::Identity();
+			Vector3d t = Vector3d::Zero();
+			T_ga[i].Output(R, t);
+			shard_ga_fine[i].Move(R, t, true);
+			R_ga_fine[i] = R;
+			t_ga_fine[i] = t;
+		}
+		MatrixXd graph_ga_post = graph_ga;
+		IcpFine(shard_ga_fine, R_ga_fine, t_ga_fine, true_node_ga, graph_ga_post);
+
+		vector<Trans> T_ga_post = T_axis;
+		for (int i = 0; i < SHARD_NUMBER; ++i) {
+			if (!true_node_ga[i])
+				continue;
+			T_ga_post[i].Input(R_ga_fine[i], t_ga_fine[i]);
+		}
+		vector<bool> right_sherd_ga_post(SHARD_NUMBER, true);
+		for (int i = 0; i < SHARD_NUMBER; i++) {
+			if (!shard_on_off[i])
+				right_sherd_ga_post[i] = false;
+		}
+		auto [k_sherd_ga_post, t_sherd_ga_post, k_edge_ga_post, t_edge_ga_post] = CountResult(
+			GT_graph, GT_trans, graph_ga_post, T_ga_post, right_sherd_ga_post);
+
+		//#################### BAISER (after fine) ####################//
+		vector<Geom> shard_baiser_fine = shard;
+		vector<Matrix3d> R_baiser_fine(SHARD_NUMBER, Matrix3d::Identity());
+		vector<Vector3d> t_baiser_fine(SHARD_NUMBER, Vector3d::Zero());
+		vector<bool> true_node_baiser = top_state.true_node_;
+
+		for (int i = 0; i < SHARD_NUMBER; ++i) {
+			if (!true_node_baiser[i])
+				continue;
+			for (size_t g = 0; g < top_state.graph_.size(); ++g) {
+				if (top_state.graph_[g].node_[i]) {
+					Matrix3d R = Matrix3d::Identity();
+					Vector3d t = Vector3d::Zero();
+					top_state.graph_[g].T_[i].Output(R, t);
+					shard_baiser_fine[i].Move(R, t, true);
+					R_baiser_fine[i] = R;
+					t_baiser_fine[i] = t;
+					break;
+				}
+			}
+		}
+
+		MatrixXd graph_baiser_post = graph_baiser_pre;
+		IcpFine(shard_baiser_fine, R_baiser_fine, t_baiser_fine, true_node_baiser, graph_baiser_post);
+
+		vector<Trans> T_baiser_post = T_axis;
+		for (int i = 0; i < SHARD_NUMBER; ++i) {
+			if (!true_node_baiser[i])
+				continue;
+			T_baiser_post[i].Input(R_baiser_fine[i], t_baiser_fine[i]);
+		}
+		vector<bool> right_sherd_baiser_post(SHARD_NUMBER, true);
+		for (int i = 0; i < SHARD_NUMBER; i++) {
+			if (!shard_on_off[i])
+				right_sherd_baiser_post[i] = false;
+		}
+		auto [k_sherd_baiser_post, t_sherd_baiser_post, k_edge_baiser_post, t_edge_baiser_post] = CountResult(
+			GT_graph, GT_trans, graph_baiser_post, T_baiser_post, right_sherd_baiser_post);
+
+		cout << "########## GA vs BAISER Comparison ##########" << endl;
+		cout << "[Before Fine] GA     Sherd " << k_sherd << "/" << t_sherd
+			<< ", Edge " << k_edge << "/" << t_edge << endl;
+		cout << "[Before Fine] BAISER Sherd " << k_sherd_baiser_pre << "/" << t_sherd_baiser_pre
+			<< ", Edge " << k_edge_baiser_pre << "/" << t_edge_baiser_pre << endl;
+		cout << "[After Fine ] GA     Sherd " << k_sherd_ga_post << "/" << t_sherd_ga_post
+			<< ", Edge " << k_edge_ga_post << "/" << t_edge_ga_post << endl;
+		cout << "[After Fine ] BAISER Sherd " << k_sherd_baiser_post << "/" << t_sherd_baiser_post
+			<< ", Edge " << k_edge_baiser_post << "/" << t_edge_baiser_post << endl;
+		cout << "#############################################" << endl;
+	}
 
 	int num_total = manager.out_state_.size();
 

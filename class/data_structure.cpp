@@ -925,6 +925,8 @@ tuple<int, int, int, int> CountResult(MatrixXd& GT_graph,
 {
 	//double rad_threshold = 0.52, t_threshold = 20.0;
 	double rad_threshold = 0.35, t_threshold = 50.0;
+	cout << "[CountResult DEBUG] Thresholds: rad=" << rad_threshold
+		<< ", trans=" << t_threshold << endl;
 	int num_sherd = right_sherd.size();
 	int total_sherd(0);
 	int k(0), total(0), k_sherd(0);
@@ -956,7 +958,29 @@ tuple<int, int, int, int> CountResult(MatrixXd& GT_graph,
 			GT_T = GT_T_a * GT_T_b;
 			T = T_a * T_b;
 
-			if (isSimilarTrans(GT_T, T, rad_threshold, t_threshold)) {
+			Matrix4d T_diff = GT_T * T.inverse();
+			Matrix3d R_diff;
+			Vector3d t_diff, w;
+			for (int r = 0; r < 3; r++) {
+				R_diff.row(r) << T_diff(r, 0), T_diff(r, 1), T_diff(r, 2);
+				t_diff[r] = T_diff(r, 3);
+			}
+			Matrix3d log_R = R_diff.log();
+			w << -log_R(1, 2), log_R(0, 2), -log_R(0, 1);
+			double rad_error = w.norm();
+			double trans_error = t_diff.norm();
+			bool pass = isSimilarTrans(GT_T, T, rad_threshold, t_threshold);
+
+			if (i < j) {
+				cout << "[CountResult DEBUG] Edge " << (i + 1) << "-" << (j + 1)
+					<< " GT=" << GT_graph(i, j)
+					<< " Pred=" << graph(i, j)
+					<< " rad_err=" << rad_error
+					<< " trans_err=" << trans_error
+					<< " => " << (pass ? "PASS" : "FAIL") << endl;
+			}
+
+			if (pass) {
 				k++;
 				af_count_graph(i, j) = 1;
 				af_count_graph(j, i) = 1;
@@ -980,6 +1004,10 @@ tuple<int, int, int, int> CountResult(MatrixXd& GT_graph,
 		else {
 			right_sherd[i] = false;
 		}
+		cout << "[CountResult DEBUG] Sherd " << (i + 1)
+			<< " gt_edges=" << gt_value
+			<< " matched_edges=" << value
+			<< " => " << (right_sherd[i] ? "MATCHED" : "MISSED") << endl;
 	}
 	double sherd_accuracy = (double)k_sherd / (double)total_sherd * 100.0;
 	cout << "********* Sherd accuracy : " << k_sherd << " / " << total_sherd << " (" << sherd_accuracy << "%) ********* " << endl;
