@@ -25,7 +25,7 @@
 #include "class/reconstruction.h"
 #include "class/feature_matching.h"			
 #include "class/ranking_system.h"
-#include "class/genetic_algorithm.h"
+// #include "class/genetic_algorithm.h"
 // test
 #define TOP_k 5
 #define BRANCH_b 3
@@ -219,10 +219,10 @@ int main(int argc, char** argv)
 	cout << "Total number pruned : " << LCS_out.size() << endl;
 	int count_move_state(0);
 
-	cout << "#################### Genetic Algorithm search ####################" << endl;
-	//////#################### Genetic Algorithm search ####################//
-	GeneticAlgorithm manager(50, 100, 3, 0.8, 0.1, 0.1, 2, 5, shard, LCS_out, step_size, path + "Result");
-	manager.Run();
+	// cout << "#################### Genetic Algorithm search ####################" << endl;
+	//////#################### Incremental graph building ####################//
+	StateManager manager(TOP_k, BRANCH_b, shard, LCS_out, step_size, path + "Result");
+	manager.BuildStep();
 
 	int num_total = manager.out_state_.size();
 
