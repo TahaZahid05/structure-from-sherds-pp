@@ -209,19 +209,88 @@ int main(int argc, char** argv)
 	PairwisePruning(shard, LCS_out);
 
 	cout << "#################### Genetic Algorithm search ####################" << endl;
-	GeneticAssembler ga(shard, LCS_out, SHARD_NUMBER);
-	ga.Run();
-	vector<Trans> T_ga = ga.GetTransforms();
-	MatrixXd graph_ga = ga.GetGraph();
+
+	// Iterative GA parameters
+	const int kMaxGAIterations = 5;
+	const double kConvergenceThreshold = 5.0; // minimum fitness improvement to continue
+
+	vector<Trans> T_ga;
+	MatrixXd graph_ga;
 	vector<Trans> T_ga_eval = T_axis;
-	for (int i = 0; i < SHARD_NUMBER; i++) {
-		if (!shard_on_off[i])
-			continue;
-		Matrix3d R_ga = Matrix3d::Identity();
-		Vector3d t_ga = { 0, 0, 0 };
-		T_ga[i].Output(R_ga, t_ga);
-		T_ga_eval[i].Input(R_ga, t_ga);
+	double prev_best_fitness = -1e9;
+	int ga_iteration = 0;
+
+	// Keep a copy of original axis-aligned shard positions
+	// so we can reset between iterations cleanly
+	vector<Geom> shard_original = shard;
+
+	for (ga_iteration = 0; ga_iteration < kMaxGAIterations; ++ga_iteration) {
+		cout << "=== GA Iteration " << ga_iteration + 1
+			<< " / " << kMaxGAIterations << " ===" << endl;
+
+		// Run GA on current match list
+		GeneticAssembler ga_iter(shard, LCS_out, SHARD_NUMBER);
+		ga_iter.Run();
+		T_ga = ga_iter.GetTransforms();
+		graph_ga = ga_iter.GetGraph();
+
+		// Get best fitness from this run
+		double current_fitness = ga_iter.GetBestFitness();
+		double improvement = current_fitness - prev_best_fitness;
+
+		// only accumulate if this iteration improved fitness
+		if (current_fitness >= prev_best_fitness || ga_iteration == 0) {
+			for (int i = 0; i < SHARD_NUMBER; i++) {
+				if (!shard_on_off[i]) continue;
+				Matrix3d R = Matrix3d::Identity();
+				Vector3d t = Vector3d::Zero();
+				T_ga[i].Output(R, t);
+				T_ga_eval[i].Input(R, t);
+			}
+		}
+
+		cout << "[GA Iter " << ga_iteration + 1 << "] "
+			<< "Best fitness: " << current_fitness
+			<< " (improvement: " << improvement << ")" << endl;
+
+		// Check convergence
+		if (ga_iteration > 0 && improvement < kConvergenceThreshold) {
+			cout << "[GA Iter " << ga_iteration + 1
+				<< "] Converged. Stopping." << endl;
+			break;
+		}
+		prev_best_fitness = current_fitness;
+
+		// If this is the last iteration, don't recompute matches
+		if (ga_iteration == kMaxGAIterations - 1) {
+			break;
+		}
+
+		// Apply GA transforms to sherds to get new assembled positions
+		// Reset to original positions first, then apply new transforms
+		shard = shard_original;
+		for (int i = 0; i < SHARD_NUMBER; i++) {
+			if (!shard_on_off[i]) continue;
+			Matrix3d R = Matrix3d::Identity();
+			Vector3d t = Vector3d::Zero();
+			T_ga[i].Output(R, t);
+			shard[i].Move(R, t, true);
+		}
+
+		// Recompute matches on newly assembled positions
+		cout << "[GA Iter " << ga_iteration + 1
+			<< "] Recomputing matches on assembled positions..." << endl;
+		LCS_out.clear();
+		FeatureComp(shard, LCS_out, 25, MINIMUM_NUMBER, 0);
+		cout << "[GA Iter " << ga_iteration + 1
+			<< "] New match count: " << LCS_out.size() << endl;
+		PairwisePruning(shard, LCS_out);
+		cout << "[GA Iter " << ga_iteration + 1
+			<< "] Pruned match count: " << LCS_out.size() << endl;
 	}
+
+	cout << "GA converged after " << ga_iteration + 1
+		<< " iteration(s)." << endl;
 
 	pair<int, int> sherd_acc, edge_acc;
 	vector<bool> right_sherd_ga(SHARD_NUMBER, true);
@@ -231,6 +300,45 @@ int main(int argc, char** argv)
 	}
 	auto [k_sherd, t_sherd, k_edge, t_edge] = CountResult(
 		GT_graph, GT_trans, graph_ga, T_ga_eval, right_sherd_ga);
+
+	// Apply GA transforms to get assembled positions for IcpFine
+	vector<Geom> shard_fine = shard_original;
+	vector<Matrix3d> R_fine(SHARD_NUMBER, Matrix3d::Identity());
+	vector<Vector3d> t_fine(SHARD_NUMBER, Vector3d::Zero());
+	vector<bool> true_node_ga(SHARD_NUMBER, false);
+
+	for (int i = 0; i < SHARD_NUMBER; i++) {
+		if (!shard_on_off[i]) continue;
+		true_node_ga[i] = true;
+		Matrix3d R = Matrix3d::Identity();
+		Vector3d t = Vector3d::Zero();
+		T_ga_eval[i].Output(R, t);
+		shard_fine[i].Move(R, t, true);
+		// R_fine and t_fine stay as Identity/Zero
+		// IcpFine will output the delta refinement only
+	}
+
+	MatrixXd graph_ga_fine = graph_ga;
+	IcpFine(shard_fine, R_fine, t_fine, true_node_ga, graph_ga_fine);
+
+	// Compose delta on top of T_ga_eval
+	vector<Trans> T_ga_eval_fine = T_ga_eval;
+	for (int i = 0; i < SHARD_NUMBER; i++) {
+		if (!true_node_ga[i]) continue;
+		T_ga_eval_fine[i].Input(R_fine[i], t_fine[i]);
+	}
+
+
+	// Evaluate fine result separately
+	vector<bool> right_sherd_fine(SHARD_NUMBER, true);
+	for (int i = 0; i < SHARD_NUMBER; i++) {
+		if (!shard_on_off[i]) right_sherd_fine[i] = false;
+	}
+	auto [k_sherd_fine, t_sherd_fine, k_edge_fine, t_edge_fine] = CountResult(
+		GT_graph, GT_trans, graph_ga_fine, T_ga_eval_fine, right_sherd_fine);
+
+	cout << "[After Fine] GA Sherd: " << k_sherd_fine << "/" << t_sherd_fine
+		<< " Edge: " << k_edge_fine << "/" << t_edge_fine << endl;
 	sherd_acc = { k_sherd, t_sherd };
 	edge_acc = { k_edge, t_edge };
 	// Note: time_ga includes preprocessing (axis alignment, LCS,

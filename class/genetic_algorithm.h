@@ -146,6 +146,17 @@ public:
         return graph_;
     }
 
+    double GetBestFitness() const
+    {
+        if (population_.empty()) return 0.0;
+        double best = population_[0].fitness;
+        for (size_t i = 1; i < population_.size(); i++) {
+            if (population_[i].fitness > best)
+                best = population_[i].fitness;
+        }
+        return best;
+    }
+
 private:
     void InitializePopulation()
     {
