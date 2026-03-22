@@ -1823,11 +1823,12 @@ void IcpIncGraphAxis(
 		}
 		//############### Solve nonlinear equation ###############//
 		if (pregraph.size() != 0) {
-			//cout << "Constant ceres parameter " << endl;
 			for (int i = 0; i < num_shard; i++) {
 				if (pregraph.back().node_[i]) {
-					problem.SetParameterBlockConstant(s[i]);
-					problem.SetParameterBlockConstant(trans[i]);
+					if (problem.HasParameterBlock(s[i]))
+						problem.SetParameterBlockConstant(s[i]);
+					if (problem.HasParameterBlock(trans[i]))
+						problem.SetParameterBlockConstant(trans[i]);
 				}
 			}
 		}

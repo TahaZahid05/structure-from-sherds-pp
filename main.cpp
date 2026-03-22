@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <algorithm>
+#include <queue>
 #include <Eigen/Dense>
 #include <Eigen/Core>
 #include <boost/thread/thread.hpp>
@@ -24,6 +25,7 @@
 #include "class/visualize.h"
 #include "class/reconstruction.h"
 #include "class/feature_matching.h"			
+#include "class/ranking_system.h"
 #include "class/genetic_algorithm.h"
 // test
 
@@ -208,6 +210,10 @@ int main(int argc, char** argv)
 	cout << "#################### Pairwise pruning ####################" << endl;
 	PairwisePruning(shard, LCS_out);
 
+	// Save matches computed on original axis-aligned positions
+	// (LCS_out gets overwritten during iterative GA, so preserve it here)
+	list<LCSIndex> LCS_original = LCS_out;
+
 	cout << "#################### Genetic Algorithm search ####################" << endl;
 
 	// Iterative GA parameters
@@ -301,6 +307,161 @@ int main(int argc, char** argv)
 	auto [k_sherd, t_sherd, k_edge, t_edge] = CountResult(
 		GT_graph, GT_trans, graph_ga, T_ga_eval, right_sherd_ga);
 
+    // ---- Post-GA Incremental ICP Refinement (replicating BAISER flow) ----
+    cout << "#################### Post-GA Incremental ICP Refinement ####################" << endl;
+
+    // Use the RankingSubgraph constructor that sets lcs_reference_ = LCS_original
+    // so MakeHierarchyPriorityList can pick and group edges correctly
+    RankingSubgraph graph_icp(LCS_original, SHARD_NUMBER);
+    graph_icp.node_[0] = true;
+    graph_icp.root_node_ = 1;
+    graph_icp.ResetMatchedIndex(shard_original);
+
+    // Work from axis-aligned original positions
+    vector<Geom> shard_icp = shard_original;
+
+    // Determine BFS placement order from graph_ga, starting from sherd 0 (root)
+    vector<int> placement_order;
+    vector<bool> bfs_placed(SHARD_NUMBER, false);
+    bfs_placed[0] = true;
+    placement_order.push_back(0);
+    queue<int> bfs_queue;
+    bfs_queue.push(0);
+    while (!bfs_queue.empty()) {
+        int curr = bfs_queue.front(); bfs_queue.pop();
+        for (int j = 0; j < SHARD_NUMBER; j++) {
+            if (!bfs_placed[j] && (graph_ga(curr, j) > 0 || graph_ga(j, curr) > 0)
+                && shard_on_off[j]) {
+                bfs_placed[j] = true;
+                placement_order.push_back(j);
+                bfs_queue.push(j);
+            }
+        }
+    }
+
+    // graph_icp.T_[k] accumulates total transform per sherd
+    // Root (sherd 0) stays identity throughout
+
+    for (int pi = 1; pi < (int)placement_order.size(); pi++) {
+        int current = placement_order[pi]; // 0-indexed
+
+        // STEP 1: Restore shard_icp to axis-aligned positions
+        shard_icp = shard_original;
+
+        // STEP 2: Re-apply accumulated transforms to all already-placed sherds
+        for (int k = 0; k < SHARD_NUMBER; k++) {
+            if (!graph_icp.node_[k]) continue;
+            Matrix3d R_k = Matrix3d::Identity();
+            Vector3d t_k = Vector3d::Zero();
+            graph_icp.T_[k].Output(R_k, t_k);
+            shard_icp[k].Move(R_k, t_k);
+        }
+
+        // STEP 3: Build priority list using full BAISER machinery
+        // Pass graph_icp by reference inside the vector so node_ state
+        // is current when MakeHierarchyPriorityList runs
+        vector<RankingSubgraph> single_graph_vec;
+        single_graph_vec.push_back(graph_icp);
+        single_graph_vec[0].MakeHierarchyPriorityList(0, single_graph_vec);
+        graph_icp = single_graph_vec[0];
+
+        // Filter priority_list_ to only keep chunks whose edges connect
+        // to the root (sherd 1). lcs.trans_ is only valid for root edges
+        // since non-root sherds have been moved by ICP and their
+        // precomputed transforms are stale.
+        vector<Chunk> filtered_priority;
+        for (auto& chunk : graph_icp.priority_list_) {
+            bool has_root_edge = false;
+            for (int ei : chunk.i_edge) {
+                int sx = graph_icp.sub_graph_[ei].shard_x_;
+                int sy = graph_icp.sub_graph_[ei].shard_y_;
+                if (sx == 1 || sy == 1) {
+                    has_root_edge = true;
+                    break;
+                }
+            }
+            if (has_root_edge)
+                filtered_priority.push_back(chunk);
+        }
+        if (!filtered_priority.empty())
+            graph_icp.priority_list_ = filtered_priority;
+
+        if (graph_icp.priority_list_.empty()) {
+            graph_icp.node_[current] = true;
+            continue;
+        }
+
+        // STEP 4: Set priority_index_ to the chunk targeting current sherd
+        // Find the chunk whose node matches current+1
+        bool found = false;
+        for (int ci = 0; ci < (int)graph_icp.priority_list_.size(); ci++) {
+            if (graph_icp.priority_list_[ci].node == current + 1) {
+                graph_icp.priority_index_ = ci;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            graph_icp.node_[current] = true;
+            continue;
+        }
+
+        // STEP 5: PrepareGraphBuilding — runs TransAverage + Move
+        // exactly as BAISER does in BuildState
+        vector<TransHistory> history;
+        PrepareGraphBuilding(shard_icp, graph_icp, history, 0);
+
+        // STEP 6: IcpIncGraphAxis — fresh R/t per call, same as BAISER BuildState
+        // Build pregraph to lock all already-placed sherds as fixed references
+        // so IcpIncGraphAxis cannot move them during optimization
+        RankingSubgraph pregraph_step(SHARD_NUMBER);
+        for (int k = 0; k < SHARD_NUMBER; k++) {
+            if (k == current) continue; // new sherd is the mover, not fixed
+            if (graph_icp.node_[k])
+                pregraph_step.node_[k] = true;
+        }
+        vector<RankingSubgraph> pregraph_vec = { pregraph_step };
+
+        vector<Matrix3d> R_step(SHARD_NUMBER, Matrix3d::Identity());
+        vector<Vector3d> t_step(SHARD_NUMBER, Vector3d::Zero());
+        int inlier_step = 0;
+        IcpIncGraphAxis(shard_icp, R_step, t_step, graph_icp,
+                        pregraph_vec, inlier_step, true, true);
+
+        // STEP 7: Store ICP delta into graph_icp.T_ for all placed sherds
+        // same as BAISER BuildState: graph.T_[i].Input(R[i], t[i])
+        for (int k = 0; k < SHARD_NUMBER; k++) {
+            if (!graph_icp.node_[k]) continue;
+            graph_icp.T_[k].Input(R_step[k], t_step[k]);
+        }
+
+
+    }
+
+    // Final evaluation: T_axis composed with graph_icp.T_[k]
+    vector<Trans> T_ga_eval_icp = T_axis;
+    for (int k = 0; k < SHARD_NUMBER; k++) {
+        if (!shard_on_off[k]) continue;
+        if (k == 0) continue;
+        Matrix3d R_k = Matrix3d::Identity();
+        Vector3d t_k = Vector3d::Zero();
+        graph_icp.T_[k].Output(R_k, t_k);
+        T_ga_eval_icp[k].Input(R_k, t_k);
+    }
+
+    // Evaluate
+    vector<bool> right_sherd_icp(SHARD_NUMBER, true);
+    for (int k = 0; k < SHARD_NUMBER; k++)
+        if (!shard_on_off[k]) right_sherd_icp[k] = false;
+
+    auto [k_sherd_icp, t_sherd_icp, k_edge_icp, t_edge_icp] = CountResult(
+        GT_graph, GT_trans, graph_ga, T_ga_eval_icp, right_sherd_icp);
+
+    cout << "########## Post-ICP Results ##########" << endl;
+    cout << "ICP Sherd Accuracy : " << k_sherd_icp << " / " << t_sherd_icp << endl;
+    cout << "ICP Edge Accuracy  : " << k_edge_icp << " / " << t_edge_icp << endl;
+    cout << "######################################" << endl;
+
 	// Apply GA transforms to get assembled positions for IcpFine
 	vector<Geom> shard_fine = shard_original;
 	vector<Matrix3d> R_fine(SHARD_NUMBER, Matrix3d::Identity());
@@ -334,40 +495,38 @@ int main(int argc, char** argv)
 	for (int i = 0; i < SHARD_NUMBER; i++) {
 		if (!shard_on_off[i]) right_sherd_fine[i] = false;
 	}
-	auto [k_sherd_fine, t_sherd_fine, k_edge_fine, t_edge_fine] = CountResult(
-		GT_graph, GT_trans, graph_ga_fine, T_ga_eval_fine, right_sherd_fine);
+	// Final result summary for refined assembly
+	sherd_acc = { k_sherd_icp, t_sherd_icp };
+	edge_acc = { k_edge_icp, t_edge_icp };
+	double time_total = (clock() - s_time) / 1000.0;
 
-	cout << "[After Fine] GA Sherd: " << k_sherd_fine << "/" << t_sherd_fine
-		<< " Edge: " << k_edge_fine << "/" << t_edge_fine << endl;
-	sherd_acc = { k_sherd, t_sherd };
-	edge_acc = { k_edge, t_edge };
-	// Note: time_ga includes preprocessing (axis alignment, LCS,
-	// pruning) + GA. For pure GA time, move s_time start to just
-	// before ga.Run().
-	double time_ga = (clock() - s_time) / 1000.0;
-	cout << "########## GA Results ##########" << endl;
-	cout << "GA Sherd Accuracy : " << k_sherd << " / " << t_sherd << endl;
-	cout << "GA Edge Accuracy  : " << k_edge << " / " << t_edge << endl;
-	cout << "GA Time           : " << time_ga << " sec" << endl;
-	cout << "################################" << endl;
-	string path_result_ga = path + "Result/GA_";
-	string ga_mkdir_cmd = "mkdir -p \"" + path_result_ga + "\"";
-	std::system(ga_mkdir_cmd.c_str());
-	SaveAcc(path_result_ga, sherd_acc, edge_acc, time_ga);
+	cout << "########## Final Refined Results ##########" << endl;
+	cout << "Final Sherd Accuracy : " << k_sherd_icp << " / " << t_sherd_icp << endl;
+	cout << "Final Edge Accuracy  : " << k_edge_icp << " / " << t_edge_icp << endl;
+	cout << "Total Runtime        : " << time_total << " sec" << endl;
+	cout << "###########################################" << endl;
+
+	string path_result_refined = path + "Result/Refined_";
+	string refined_mkdir_cmd = "mkdir -p \"" + path_result_refined + "\"";
+	std::system(refined_mkdir_cmd.c_str());
+	SaveAcc(path_result_refined, sherd_acc, edge_acc, time_total);
 
 	for (int i = 0; i < SHARD_NUMBER; i++) {
 		pc_origin[i].TurnOffData(viewer);
 	}
 
-	// Apply GA transforms and show result
+	// Apply ICP-refined relative transforms and show result.
+	// shard_original contains axis-aligned pieces.
+	// graph_icp.T_[i] contains the refinement relative to the root piece.
+	// Applying T_[i] to shard_original[i] results in the final assembly.
 	for (int i = 0; i < SHARD_NUMBER; i++) {
 		if (!shard_on_off[i]) continue;
 		Matrix3d R_vis = Matrix3d::Identity();
 		Vector3d t_vis = Vector3d::Zero();
-		T_ga[i].Output(R_vis, t_vis);
+		graph_icp.T_[i].Output(R_vis, t_vis);
 		pc_origin[i].UpdateData(viewer,
-			shard[i].edge_line_.point_,
-			shard[i].edge_line_.normal_);
+			shard_original[i].edge_line_.point_,
+			shard_original[i].edge_line_.normal_);
 		pc_origin[i].MeshTransform(R_vis, t_vis, viewer);
 		pc_origin[i].AddPointCloud(viewer);
 		pc_origin[i].AddMesh(viewer);
@@ -375,7 +534,7 @@ int main(int argc, char** argv)
 	viewer->resetCamera();
 
 	// Simple viewer loop — press q to quit
-	cout << "Showing GA assembly result. Press Q to quit." << endl;
+	cout << "Showing Refined assembly result. Press Q to quit." << endl;
 	while (!viewer->wasStopped()) {
 		viewer->spinOnce(100);
 	}

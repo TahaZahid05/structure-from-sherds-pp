@@ -172,7 +172,6 @@ void RankingSubgraph::MakeHierarchyPriorityList(int index,
 	}
 
 	//########## First, Make priority list for outside edge.
-	//cout << "Priority = " << priority.size() << endl;
 	priority.sort(NodeCompare);
 	CombineChunk(priority);
 
@@ -183,7 +182,6 @@ void RankingSubgraph::MakeHierarchyPriorityList(int index,
 
 
 	//########## Make priority list for inside edges
-	//cout << "Number of inside edge : " << state_priority.size() << endl;
 	state_priority.sort([](const Chunk& a, const Chunk& b) -> bool {
 		return a.graph_index < b.graph_index;
 		});

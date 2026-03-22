@@ -184,6 +184,20 @@ private:
 
     double EvaluateFitness(const Chromosome& chromosome) const
     {
+        // Compute max allowed neighbors dynamically from the match list
+        // rather than using a hardcoded constant that may be wrong for larger pots
+        int kMaxNeighbors = 0;
+        for (int i = 0; i < num_shards_; i++) {
+            int count = 0;
+            for (size_t j = 0; j < matches_.size(); j++) {
+                if (matches_[j].shard_x_ - 1 == i || matches_[j].shard_y_ - 1 == i)
+                    count++;
+            }
+            kMaxNeighbors = max(kMaxNeighbors, count);
+        }
+        // Cap at num_shards_ - 1 (maximum possible connections)
+        kMaxNeighbors = min(kMaxNeighbors, num_shards_ - 1);
+
         double fitness = 0.0;
         vector<int> neighbor_count(num_shards_, 0);
         vector<vector<int>> adjacency(num_shards_);
@@ -849,13 +863,12 @@ private:
     }
 
 private:
-    static constexpr int kPopulationSize = 50;
+    static constexpr int kPopulationSize = 100;
     static constexpr int kMaxGenerations = 100;
     static constexpr int kElitismCount = 2;
     static constexpr double kMutationRate = 0.05;
     static constexpr int kGuidedRepairTrials = 3;
     static constexpr double kInitialPairActivationRate = 0.3;
-    static constexpr int kMaxNeighbors = 4;
     static constexpr double kEdgeResidualThreshold = 50.0;
     static constexpr double kEdgeResidualPenalty = 0.05;
     static constexpr double kEdgeRotResidualThreshold = 0.35;
